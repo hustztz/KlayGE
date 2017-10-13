@@ -76,7 +76,7 @@ namespace
 {
 	using namespace KlayGE;
 
-	uint32_t const KFX_VERSION = 0x0110;
+	uint32_t const KFX_VERSION = 0x0120;
 
 	std::mutex singleton_mutex;
 
@@ -3011,6 +3011,7 @@ namespace KlayGE
 				shader_frags_.clear();
 				hlsl_shader_.clear();
 				techniques_.clear();
+				shader_graph_nodes_.clear();
 
 				shader_descs_.resize(1);
 
@@ -3153,6 +3154,32 @@ namespace KlayGE
 					effect.params_.back()->Load(node);
 				}
 
+				for (XMLNodePtr shader_graph_nodes_node = root->FirstNode("shader_graph_nodes"); shader_graph_nodes_node;
+					shader_graph_nodes_node = shader_graph_nodes_node->NextSibling("shader_graph_nodes"))
+				{
+					auto name_attr = shader_graph_nodes_node->Attrib("name");
+					BOOST_ASSERT(name_attr);
+
+					auto const & node_name = name_attr->ValueString();
+					size_t const node_name_hash = HashRange(node_name.begin(), node_name.end());
+					bool found = false;
+					for (auto& gn : shader_graph_nodes_)
+					{
+						if (node_name_hash == gn.NameHash())
+						{
+							gn.Load(shader_graph_nodes_node);
+							found = true;
+							break;
+						}
+					}
+
+					if (!found)
+					{
+						shader_graph_nodes_.push_back(RenderShaderGraphNode());
+						shader_graph_nodes_.back().Load(shader_graph_nodes_node);
+					}
+				}
+
 				for (XMLNodePtr shader_node = root->FirstNode("shader"); shader_node; shader_node = shader_node->NextSibling("shader"))
 				{
 					shader_frags_.push_back(RenderShaderFragment());
@@ -3252,6 +3279,16 @@ namespace KlayGE
 							{
 								effect.params_[i] = MakeUniquePtr<RenderEffectParameter>();
 								effect.params_[i]->StreamIn(source);
+							}
+						}
+
+						{
+							uint8_t num_shader_graph_nodes;
+							source->read(&num_shader_graph_nodes, sizeof(num_shader_graph_nodes));
+							shader_graph_nodes_.resize(num_shader_graph_nodes);
+							for (uint32_t i = 0; i < num_shader_graph_nodes; ++ i)
+							{
+								shader_graph_nodes_[i].StreamIn(source);
 							}
 						}
 
@@ -3381,6 +3418,15 @@ namespace KlayGE
 			for (uint32_t i = 0; i < effect.params_.size(); ++ i)
 			{
 				effect.params_[i]->StreamOut(os);
+			}
+		}
+
+		{
+			uint8_t num_shader_graph_nodes = static_cast<uint8_t>(shader_graph_nodes_.size());
+			os.write(reinterpret_cast<char const *>(&num_shader_graph_nodes), sizeof(num_shader_graph_nodes));
+			for (uint32_t i = 0; i < shader_graph_nodes_.size(); ++ i)
+			{
+				shader_graph_nodes_[i].StreamOut(os);
 			}
 		}
 
@@ -3687,6 +3733,16 @@ namespace KlayGE
 			}
 		}
 
+		if (this->NumShaderGraphNodes() > 0)
+		{
+			for (uint32_t i = 0; i < this->NumShaderGraphNodes(); ++ i)
+			{
+				auto const & node = this->ShaderGraphNodesByIndex(i);
+				str += node.GenDeclarationCode();
+			}
+			str += '\n';
+		}
+
 		for (uint32_t i = 0; i < this->NumShaderFragments(); ++ i)
 		{
 			RenderShaderFragment const & effect_shader_frag = this->ShaderFragmentByIndex(i);
@@ -3741,6 +3797,17 @@ namespace KlayGE
 			{
 				str += "#endif\n";
 			}
+		}
+
+		if (this->NumShaderGraphNodes() > 0)
+		{
+			str += '\n';
+			for (uint32_t i = 0; i < this->NumShaderGraphNodes(); ++ i)
+			{
+				auto const & node = this->ShaderGraphNodesByIndex(i);
+				str += node.GenDefinitionCode();
+			}
+			str += '\n';
 		}
 	}
 #endif
@@ -5259,6 +5326,160 @@ namespace KlayGE
 		tmp = Native2LE(len);
 		os.write(reinterpret_cast<char const *>(&tmp), sizeof(tmp));
 		os.write(&str_[0], len * sizeof(str_[0]));
+	}
+#endif
+
+
+#if KLAYGE_IS_DEV_PLATFORM
+	void RenderShaderGraphNode::Load(XMLNodePtr const & node)
+	{
+		XMLAttributePtr attr = node->Attrib("name");
+		BOOST_ASSERT(attr);
+
+		if (!name_.empty())
+		{
+			BOOST_ASSERT(name_ == attr->ValueString());
+		}
+		else
+		{
+			name_ = attr->ValueString();
+			name_hash_ = HashRange(name_.begin(), name_.end());
+
+			attr = node->Attrib("return");
+			if (attr)
+			{
+				return_type_ = attr->ValueString();
+			}
+			else
+			{
+				return_type_ = "void";
+			}
+
+			for (XMLNodePtr param_node = node->FirstNode(); param_node; param_node = param_node->NextSibling())
+			{
+				XMLAttributePtr type_attr = param_node->Attrib("type");
+				XMLAttributePtr name_attr = param_node->Attrib("name");
+				BOOST_ASSERT(type_attr);
+				BOOST_ASSERT(name_attr);
+
+				params_.emplace_back(type_attr->ValueString(), name_attr->ValueString());
+			}
+		}
+
+		attr = node->Attrib("impl");
+		if (attr)
+		{
+			impl_ = attr->ValueString();
+		}
+	}
+#endif
+
+	void RenderShaderGraphNode::StreamIn(ResIdentifierPtr const & res)
+	{
+		name_ = ReadShortString(res);
+		name_hash_ = HashRange(name_.begin(), name_.end());
+
+		return_type_ = ReadShortString(res);
+		impl_ = ReadShortString(res);
+
+		uint8_t len;
+		res->read(&len, sizeof(len));
+		params_.resize(len);
+		for (uint32_t i = 0; i < len; ++ i)
+		{
+			params_.emplace_back(ReadShortString(res), ReadShortString(res));
+		}
+	}
+
+#if KLAYGE_IS_DEV_PLATFORM
+	void RenderShaderGraphNode::StreamOut(std::ostream& os) const
+	{
+		WriteShortString(os, name_);
+		WriteShortString(os, return_type_);
+		WriteShortString(os, impl_);
+
+		uint8_t len = static_cast<uint8_t>(params_.size());
+		os.write(reinterpret_cast<char*>(&len), sizeof(len));
+		for (uint32_t i = 0; i < len; ++ i)
+		{
+			WriteShortString(os, params_[i].first);
+			WriteShortString(os, params_[i].second);
+		}
+	}
+#endif
+
+#if KLAYGE_IS_DEV_PLATFORM
+	std::string RenderShaderGraphNode::GenDeclarationCode() const
+	{
+		std::string ret;
+
+		ret += return_type_;
+		ret += ' ';
+		ret += name_;
+		ret += '(';
+		for (size_t i = 0; i < params_.size(); ++ i)
+		{
+			auto const & param = params_[i];
+
+			ret += param.first;
+			ret += ' ';
+			ret += param.second;
+
+			if (i != params_.size() - 1)
+			{
+				ret += ", ";
+			}
+		}
+		ret += ");\n";
+
+		return ret;
+	}
+
+	std::string RenderShaderGraphNode::GenDefinitionCode() const
+	{
+		std::string ret;
+
+		ret += return_type_;
+		ret += ' ';
+		ret += name_;
+		ret += '(';
+		for (size_t i = 0; i < params_.size(); ++ i)
+		{
+			auto const & param = params_[i];
+
+			ret += param.first;
+			ret += ' ';
+			ret += param.second;
+
+			if (i != params_.size() - 1)
+			{
+				ret += ", ";
+			}
+		}
+		ret += ")\n";
+		ret += "{\n";
+		ret += "\t";
+		if (return_type_ != "void")
+		{
+			ret += "return ";
+		}
+		ret += impl_;
+		ret += '(';
+		for (size_t i = 0; i < params_.size(); ++ i)
+		{
+			auto const & param = params_[i];
+
+			ret += param.second;
+
+			if (i != params_.size() - 1)
+			{
+				ret += ", ";
+			}
+		}
+		ret += ");";
+		ret += "}\n\n";
+
+		return ret;
 	}
 #endif
 

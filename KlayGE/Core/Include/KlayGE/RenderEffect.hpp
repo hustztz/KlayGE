@@ -597,6 +597,66 @@ namespace KlayGE
 		std::string str_;
 	};
 
+	class KLAYGE_CORE_API RenderShaderGraphNode
+	{
+	public:
+#if KLAYGE_IS_DEV_PLATFORM
+		void Load(XMLNodePtr const & node);
+#endif
+
+		void StreamIn(ResIdentifierPtr const & res);
+#if KLAYGE_IS_DEV_PLATFORM
+		void StreamOut(std::ostream& os) const;
+#endif
+
+		std::string const & Name() const
+		{
+			return name_;
+		}
+		size_t NameHash() const
+		{
+			return name_hash_;
+		}
+
+		std::string const & ReturnType() const
+		{
+			return return_type_;
+		}
+
+		uint32_t NumParameters() const
+		{
+			return static_cast<uint32_t>(params_.size());
+		}
+		std::pair<std::string, std::string> const & Parameter(uint32_t n) const
+		{
+			BOOST_ASSERT(n < this->NumParameters());
+			return params_[n];
+		}
+
+		std::string const & ImplName() const
+		{
+			return impl_;
+		}
+
+		void OverrideImpl(std::string_view impl)
+		{
+			impl_ = impl;
+		}
+
+#if KLAYGE_IS_DEV_PLATFORM
+		std::string GenDeclarationCode() const;
+		std::string GenDefinitionCode() const;
+#endif
+
+	private:
+		std::string name_;
+		size_t name_hash_;
+
+		std::string return_type_;
+		std::vector<std::pair<std::string, std::string>> params_;
+		std::string impl_;
+	};
+
 	// äÖÈ¾Ð§¹û
 	//////////////////////////////////////////////////////////////////////////////////
 	class KLAYGE_CORE_API RenderEffect : boost::noncopyable
@@ -722,6 +782,16 @@ namespace KlayGE
 			return macros_[n].first;
 		}
 
+		uint32_t NumShaderGraphNodes() const
+		{
+			return static_cast<uint32_t>(shader_graph_nodes_.size());
+		}
+		RenderShaderGraphNode const & ShaderGraphNodesByIndex(uint32_t n) const
+		{
+			BOOST_ASSERT(n < this->NumShaderGraphNodes());
+			return shader_graph_nodes_[n];
+		}
+
 #if KLAYGE_IS_DEV_PLATFORM
 		void GenHLSLShaderText(RenderEffect const & effect);
 		std::string const & HLSLShaderText() const
@@ -753,6 +823,8 @@ namespace KlayGE
 #endif
 
 		std::vector<ShaderDesc> shader_descs_;
+
+		std::vector<RenderShaderGraphNode> shader_graph_nodes_;
 	};
 
 	class KLAYGE_CORE_API RenderTechnique : boost::noncopyable
